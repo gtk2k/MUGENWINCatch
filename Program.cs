@@ -1,38 +1,27 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Diagnostics;
 using System.IO;
 using System.Drawing.Imaging;
-using System.Reflection;
-using System.Resources;
 using System.Threading;
 using WindowsInput;
+using System.Collections.Generic;
 
 namespace MUGENWINCatch
 {
     class Program
     {
         [DllImport("user32.dll")]
-        public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+        static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
         [DllImport("user32.dll")]
-        private static extern bool SetForegroundWindow(IntPtr hWnd);
-        [DllImport("user32.dll")]
-        static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, SetWindowPosFlags uFlags);
+        static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("User32.dll")]
-        private extern static bool PrintWindow(IntPtr hwnd, IntPtr hDC, uint nFlags);
-
-        [Flags]
-        internal enum SetWindowPosFlags : int
-        {
-            SWP_NOSIZE = 1,
-            SWP_SHOWWINDOW = 0x40
-        }
+        static extern bool PrintWindow(IntPtr hwnd, IntPtr hDC, uint nFlags);
+        [DllImport("KERNEL32.DLL")]
+        static extern uint GetPrivateProfileString(string lpAppName, string lpKeyName, string lpDefault, StringBuilder lpReturnedString, uint nSize, string lpFileName);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
@@ -67,7 +56,6 @@ namespace MUGENWINCatch
                 p2 = "kfm";
             }
 
-           
             if (string.IsNullOrWhiteSpace(Properties.Settings.Default.loiloPath))
             {
                 var frm = new frmSetting();
@@ -142,6 +130,12 @@ namespace MUGENWINCatch
                     }
                 }
             }
+            var loiloPath = Properties.Settings.Default.loiloPath;
+            var loiloDir = Path.GetDirectoryName(loiloPath);
+            var mugenPath = Properties.Settings.Default.mugenPath;
+            var mugenDir = Path.GetDirectoryName(mugenPath);
+            var ffmpegPath = Properties.Settings.Default.ffmpegPath;
+            var ffmpegDir = Path.GetDirectoryName(ffmpegPath);
 
             // すでに起動されているLoiLoやMUGENがあれば強制終了させる
             var procs = Process.GetProcesses();
@@ -159,10 +153,18 @@ namespace MUGENWINCatch
                 }
             }
 
+            // MUGENのログファイルが残ってる場合は削除する
+            // ログは追記され、扱いが面倒になるため
+            var mugenLogFile = Path.Combine(mugenDir, "log.txt");
+            if (File.Exists(mugenLogFile))
+            {
+                File.Delete(mugenLogFile);
+            }
+
             // AI(CPU)同士でクイック戦闘モード起動のコマンドライン引数を設定
-            var mugenargs = "-p1 " + p1 + " -p1.ai 1 -p1.life 1" + " -p2 " + p2 + " -p2.ai 1 -p2.life 1 -rounds 2";
-            ProcessStartInfo mugenPsi = new ProcessStartInfo(Properties.Settings.Default.mugenPath, mugenargs);
-            mugenPsi.WorkingDirectory = Path.GetDirectoryName(Properties.Settings.Default.mugenPath);
+            var mugenargs = "-p1 " + p1 + " -p1.ai 1 -p1.life 1" + " -p2 " + p2 + " -p2.ai 1 -p2.life 1 -rounds 2 -log log.txt";
+            ProcessStartInfo mugenPsi = new ProcessStartInfo(mugenPath, mugenargs);
+            mugenPsi.WorkingDirectory = mugenDir;
             // MUGENを起動
             mugen = Process.Start(mugenPsi);
             mugen.WaitForInputIdle();
@@ -186,7 +188,7 @@ namespace MUGENWINCatch
             // mugenをアクティブにする
             SetForegroundWindow(mugen.MainWindowHandle);
             Thread.Sleep(100);
-            // 起動直後、録画の準備が整うまでPAUSEキーをおして一時停止させる
+            // 起動直後、録画の準備が整うまでPAUSEキーをおして一時停止しておく
             InputSimulator.SimulateKeyPress(VirtualKeyCode.PAUSE);
             //SetWindowPos(mugen.MainWindowHandle, IntPtr.Zero, 1500, 0, 0, 0, SetWindowPosFlags.SWP_NOSIZE | SetWindowPosFlags.SWP_SHOWWINDOW);
 
@@ -220,10 +222,9 @@ namespace MUGENWINCatch
             // mugenをアクティブにする
             SetForegroundWindow(mugen.MainWindowHandle);
             Thread.Sleep(100);
-            // 一時停止を解除
+            // MUGENの一時停止を解除
             InputSimulator.SimulateKeyPress(VirtualKeyCode.PAUSE);
             Thread.Sleep(1000);
-
 
             // AVI出力フォルダ監視開始
             watcher = new FileSystemWatcher();
@@ -235,176 +236,8 @@ namespace MUGENWINCatch
             // 録画開始
             InputSimulator.SimulateKeyPress(VirtualKeyCode.F6);
 
-            checkBmp = (Bitmap)Properties.Resources.check;
-
-            StateObjClass StateObj = new StateObjClass();
-            StateObj.TimerCanceled = false;
-            StateObj.mugen = mugen;
-            RunTimer(StateObj);
+            // MUGENが終了するまで待機
             mugen.WaitForExit();
-
-            //Console.ReadKey();
-            mevt = new ManualResetEvent(false);
-            mevt.WaitOne();
-        }
-
-        static void watcher_Created(object sender, FileSystemEventArgs e)
-        {
-            // 作成されたAVIファイルパスを取得
-            aviPath = e.FullPath;
-        }
-
-        static void mugen_Exited(object sender, EventArgs e)
-        {
-            throw new NotImplementedException();
-        }
-
-        private class StateObjClass
-        {
-            public Process mugen;
-            public int Left2StateCnt;
-            public int Right2StateCnt;
-            public int Left1StateCnt;
-            public int Right1StateCnt;
-            public System.Threading.Timer TimerReference;
-            public bool TimerCanceled;
-        }
-
-        static void RunTimer(StateObjClass stateObj)
-        {
-            System.Threading.TimerCallback TimerDelegate = new System.Threading.TimerCallback(TimerTask);
-            var TimerItem = new System.Threading.Timer(TimerDelegate, stateObj, 700, 700);
-            stateObj.TimerReference = TimerItem;
-        }
-
-        static void TimerTask(object StateObj)
-        {
-            StateObjClass State = (StateObjClass)StateObj;
-
-            if (State.TimerCanceled)
-            {
-                State.TimerReference.Dispose();
-                System.Diagnostics.Debug.WriteLine("wincatchスレッド終了");
-            }
-            
-            //SetForegroundWindow(State.Target.MainWindowHandle); 
-            using (var mugenBmp = PrintWnd(mugen.MainWindowHandle))
-            {
-                if (mugenBmp == null)
-                {
-                    Console.Write("勝負結果の取得に失敗した可能性があります。");
-                    State.TimerCanceled = true;
-                    stopRecord();
-                    return;
-                }
-                var p = mugenBmp.GetPixel(558, 60);
-                if (p.R != 8 || p.G != 12 || p.B != 8)
-                {
-                    // 戦闘中じゃない
-                    return;
-                }
-
-                if (!Compare(mugenBmp, 558, 50))
-                {
-                    State.Left2StateCnt++;
-                    if (State.Left2StateCnt == 2)
-                    {
-                        Console.WriteLine("左2勝");
-                        battleResult.AppendLine("左2勝");
-                        State.TimerCanceled = true;
-                        stopRecord();
-                        return;
-                    }
-                }
-                else
-                {
-                    State.Left2StateCnt = 0;
-                }
-
-                if (!Compare(mugenBmp, 718, 50))
-                {
-                    State.Right2StateCnt++;
-                    if (State.Right2StateCnt == 2)
-                    {
-                        Console.WriteLine("右2勝");
-                        battleResult.AppendLine("右2勝");
-                        State.TimerCanceled = true;
-                        stopRecord();
-                        return;
-                    }
-                }
-                else
-                {
-                    State.Right2StateCnt = 0;
-                }
-
-                using (var bmp = new Bitmap(10, 10))
-                using (var g = Graphics.FromImage(bmp))
-                {
-                    g.DrawImage(mugenBmp, new Rectangle(0, 0, 10, 10), new Rectangle(582, 50, 10, 10), GraphicsUnit.Pixel);
-                    bmp.Save("left1.png", ImageFormat.Png);
-                }
-                if (!Compare(mugenBmp, 582, 50))
-                {
-                    State.Left1StateCnt++;
-                    if (State.Left1StateCnt == 2)
-                    {
-                        Console.WriteLine("左1勝");
-                        battleResult.AppendLine("左1勝");
-                    }
-                }
-                else
-                {
-                    State.Left1StateCnt = 0;
-                }
-
-                using (var bmp = new Bitmap(10, 10))
-                using (var g = Graphics.FromImage(bmp))
-                {
-                    g.DrawImage(mugenBmp, new Rectangle(0, 0, 10, 10), new Rectangle(694, 50, 10, 10), GraphicsUnit.Pixel);
-                    bmp.Save("right1.png", ImageFormat.Png);
-                }
-                if (!Compare(mugenBmp, 694, 50))
-                {
-                    State.Right1StateCnt++;
-                    if (State.Right1StateCnt == 3)
-                    {
-                        Console.WriteLine("右1勝");
-                        battleResult.AppendLine("右1勝");
-                    }
-                }
-                else
-                {
-                    State.Right1StateCnt = 0;
-                }
-            }
-        }
-
-        static bool Compare(Bitmap targetBmp, int offsetX, int offsetY)
-        {
-            for (var x = 0; x < 10; x++)
-            {
-                for (var y = 0; y < 10; y++)
-                {
-                    var tColor = targetBmp.GetPixel(x + offsetX, y + offsetY);
-                    var cColor = checkBmp.GetPixel(x, y);
-                    if (tColor.R != cColor.R || tColor.G != cColor.G || tColor.B != cColor.B)
-                    {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-
-        static void stopRecord()
-        {
-            // クイック対戦モードは対戦が終了すると、自動的にアプリも終了するみたい。
-            // LoiLo Game Recorderもターゲットのアプリが終了すると自動的に録画も停止するため
-            // プログラム側から停止する必要もない
-            //// 戦闘終了5秒後に録画停止
-            //Thread.Sleep(5000);
-            //InputSimulator.SimulateKeyPress(VirtualKeyCode.F6);
 
             // AVIファイル出力完了待機
             var flg = true;
@@ -428,36 +261,44 @@ namespace MUGENWINCatch
             // LoiLo Game Recorderを(強制)終了
             loilo.Kill();
 
-            //// MUGENを(強制)終了
-            //// クイックモードのときは戦闘終了すると自動で閉じるみたい。
-            //try
-            //{
-            //    mugen.Close();
-            //} 
-            //catch(Exception)
-            //{
-            //    mugen.Kill();
-            //}
-            
             // ffmpegでmp4に変換
             var fileName = Path.GetFileNameWithoutExtension(aviPath);
-            var mp4FilePath = Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, Properties.Settings.Default.mp4Path); 
-                mp4FilePath = Path.Combine(mp4FilePath, fileName + ".mp4");
-            var args = "-i \"" + aviPath + "\" -vcodec libx264 -vprofile high -preset slow -b:v 1000k -vf scale=-1:720 -threads 0 -acodec libvo_aacenc -b:a 196k \"" + mp4FilePath + "\"";
-            var ffmpegPsi = new ProcessStartInfo(Properties.Settings.Default.ffmpegPath, args);
+            var mp4FilePath = Path.Combine(AppDomain.CurrentDomain.SetupInformation.ApplicationBase, Properties.Settings.Default.mp4Path);
+            mp4FilePath = Path.Combine(mp4FilePath, fileName + ".mp4");
+            var ffmpegArgs = "-i \"" + aviPath + "\" -vcodec libx264 -vprofile high -preset slow -b:v 1000k -vf scale=-1:720 -threads 0 -acodec libvo_aacenc -b:a 196k \"" + mp4FilePath + "\"";
+            var ffmpegPsi = new ProcessStartInfo(Properties.Settings.Default.ffmpegPath, ffmpegArgs);
             var ffmpeg = Process.Start(ffmpegPsi);
             ffmpeg.WaitForExit();
 
             // AVIファイル削除
             File.Delete(aviPath);
 
-            // バトル結果を出力
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(mp4FilePath),  Path.GetFileNameWithoutExtension(mp4FilePath) + "_result.txt"), battleResult.ToString());
+            // MUGENのログファイルよりバトル結果を取得
+            var battleResult = new List<string>();
+            var sb = new StringBuilder(1024);
+            for (var i = 1; i <= 3; i++)
+            {
+                GetPrivateProfileString("Match 1 Round " + i, "winningteam", "", sb, 1024, mugenLogFile);
+                if (sb.Length > 0)
+                {
+                    battleResult.Add(sb.ToString());
+                }
+                sb.Length = 0;
+            }
+            GetPrivateProfileString("Match 1 Round 3", "winningteam", "", sb, 1024, mugenLogFile);
+            var r3 = sb.ToString();
+
+            // バトル結果出力
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(mp4FilePath), Path.GetFileNameWithoutExtension(mp4FilePath) + "_result.txt"), string.Join("\r\n", battleResult.ToArray()));
 
             // MP4を再生してみる
             Process.Start(mp4FilePath);
+        }
 
-            mevt.Set();
+        static void watcher_Created(object sender, FileSystemEventArgs e)
+        {
+            // 作成されたAVIファイルパスを取得
+            aviPath = e.FullPath;
         }
 
         static Bitmap PrintWnd(IntPtr hWnd)
